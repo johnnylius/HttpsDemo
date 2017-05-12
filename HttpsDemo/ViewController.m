@@ -68,12 +68,14 @@
 - (void)connection:(NSURLConnection *)connection willSendRequestForAuthenticationChallenge:(NSURLAuthenticationChallenge *)challenge {
     SecTrustRef serverTrust = challenge.protectionSpace.serverTrust;
     
+    // 加载证书文件
     NSData *certificateData = [self loadCertificateData];
     NSMutableArray *certificateArray = [NSMutableArray array];
     [certificateArray addObject:(__bridge_transfer id)SecCertificateCreateWithData(NULL, (__bridge CFDataRef)certificateData)];
+    // 设置锚点证书
     SecTrustSetAnchorCertificates(serverTrust, (__bridge CFArrayRef)certificateArray);
     
-    // SecTrustEvaluate对trust进行验证
+    // SecTrustEvaluate对serverTrust进行验证
     if (ServerTrustIsValid(serverTrust)) {
         // 验证成功，生成NSURLCredential凭证cred，告知challenge的sender使用这个凭证来继续连接
         NSURLCredential *credential = [NSURLCredential credentialForTrust:serverTrust];
@@ -107,49 +109,21 @@
     [task resume];
 }
 
-//- (void)URLSession:(NSURLSession *)session didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
-// completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential * _Nullable credential))completionHandler {
-//    //1)获取trust object
-//    SecTrustRef serverTrust = challenge.protectionSpace.serverTrust;
-//    
-//    CFArrayRef defaultPolicies = NULL;
-//    SecTrustCopyPolicies(serverTrust, &defaultPolicies);
-//    CFIndex index = CFArrayGetCount(defaultPolicies);
-//    for (CFIndex i = 0; i < index; i++) {
-//        NSLog(@"Default Trust Policies: %@", (__bridge id)CFArrayGetValueAtIndex(defaultPolicies, i));
-//    }
-//    
-//    SecTrustResultType result;
-//    
-//    //2)SecTrustEvaluate对trust进行验证
-//    OSStatus status = SecTrustEvaluate(serverTrust, &result);
-//    if (status == errSecSuccess &&
-//        (result == kSecTrustResultProceed || result == kSecTrustResultUnspecified)) {
-//        //3)验证成功，生成NSURLCredential凭证cred，告知challenge的sender使用这个凭证来继续连接
-//        NSURLCredential *credential = [NSURLCredential credentialForTrust:serverTrust];
-//        [challenge.sender useCredential:credential forAuthenticationChallenge:challenge];
-//        
-//        completionHandler(NSURLSessionAuthChallengeUseCredential, credential);
-//        NSLog(@"success");
-//    } else {
-//        //4)验证失败，取消这次验证流程
-//        completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
-//        NSLog(@"error");
-//    }
-//}
-
 - (void)URLSession:(NSURLSession *)session didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
  completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential * _Nullable credential))completionHandler {
     SecTrustRef serverTrust = challenge.protectionSpace.serverTrust;
     
+    // 加载证书文件
     NSData *certificateData = [self loadCertificateData];
     NSMutableArray *certificateArray = [NSMutableArray array];
     [certificateArray addObject:(__bridge_transfer id)SecCertificateCreateWithData(NULL, (__bridge CFDataRef)certificateData)];
+    // 设置锚点证书
     SecTrustSetAnchorCertificates(serverTrust, (__bridge CFArrayRef)certificateArray);
     
     NSURLSessionAuthChallengeDisposition disposition = NSURLSessionAuthChallengePerformDefaultHandling;
     NSURLCredential *credential = nil;
     if (ServerTrustIsValid(serverTrust)) {
+        // 验证成功，生成NSURLCredential凭证cred
         credential = [NSURLCredential credentialForTrust:serverTrust];
         if (credential) {
             disposition = NSURLSessionAuthChallengeUseCredential;
@@ -161,6 +135,7 @@
         disposition = NSURLSessionAuthChallengeCancelAuthenticationChallenge;
         [self printLogWithTitle:@"TrustEvaluate Error" content:@""];
     }
+    // 继续完成验证挑战
     completionHandler(disposition, credential);
 }
 
@@ -207,43 +182,13 @@
 }
 
 - (AFSecurityPolicy *)certificateSecurityPolicy {
+    // 设置证书验证模式
     AFSecurityPolicy *securityPolicy = [AFSecurityPolicy policyWithPinningMode:AFSSLPinningModeCertificate];
+    // 设置验证证书
     securityPolicy.pinnedCertificates = @[[self loadCertificateData]];
+    // 允许无效证书，12306证书为不可信证书
     securityPolicy.allowInvalidCertificates = YES;
     return securityPolicy;
-}
-
-// 校验证书
-- (void)checkCredential:(AFURLSessionManager *)manager {
-    [manager setSessionDidBecomeInvalidBlock:^(NSURLSession * _Nonnull session, NSError * _Nonnull error) {
-    }];
-    
-    __weak typeof(manager)weakManager = manager;
-    [manager setSessionDidReceiveAuthenticationChallengeBlock:^NSURLSessionAuthChallengeDisposition(NSURLSession*session, NSURLAuthenticationChallenge *challenge, NSURLCredential *__autoreleasing*_credential) {
-        NSURLSessionAuthChallengeDisposition disposition = NSURLSessionAuthChallengePerformDefaultHandling;
-        __autoreleasing NSURLCredential *credential =nil;
-        NSLog(@"authenticationMethod=%@",challenge.protectionSpace.authenticationMethod);
-        //判断是核验客户端证书还是服务器证书
-        if([challenge.protectionSpace.authenticationMethod isEqualToString:NSURLAuthenticationMethodServerTrust]) {
-            // 基于客户端的安全策略来决定是否信任该服务器，不信任的话，也就没必要响应挑战
-            if([weakManager.securityPolicy evaluateServerTrust:challenge.protectionSpace.serverTrust forDomain:challenge.protectionSpace.host]) {
-                // 创建挑战证书（注：挑战方式为UseCredential和PerformDefaultHandling都需要新建挑战证书）
-                NSLog(@"serverTrust=%@",challenge.protectionSpace.serverTrust);
-                credential = [NSURLCredential credentialForTrust:challenge.protectionSpace.serverTrust];
-                // 确定挑战的方式
-                if (credential) {
-                    //证书挑战  设计policy,none，则跑到这里
-                    disposition = NSURLSessionAuthChallengeUseCredential;
-                } else {
-                    disposition = NSURLSessionAuthChallengePerformDefaultHandling;
-                }
-            } else {
-                disposition = NSURLSessionAuthChallengeCancelAuthenticationChallenge;
-            }
-        }
-        *_credential = credential;
-        return disposition;
-    }];
 }
 
 #pragma mark - Private Methods
